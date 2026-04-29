@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { computeSplit } from "../domain/split-engine.js";
-import type { Expense, ExpenseParticipant, Group, Member, Payment } from "../domain/types.js";
-import type { AppStore, CreateExpensePayload } from "./store.js";
+import type { Expense, ExpenseParticipant, Group, Member, Payment, PlannedExpense } from "../domain/types.js";
+import type { AppStore, CreateExpensePayload, CreatePlannedExpensePayload } from "./store.js";
 
 export class MemoryStore implements AppStore {
   private groups = new Map<string, Group>();
   private members = new Map<string, Member[]>();
   private expenses = new Map<string, Expense[]>();
   private payments = new Map<string, Payment[]>();
+  private plannedExpenses = new Map<string, PlannedExpense[]>();
 
-  async createGroup(name: string, currency: string, dates?: { startDate?: string; endDate?: string }): Promise<Group> {
+  async createGroup(name: string, currency: string, dates?: { startDate?: string; endDate?: string }, userId?: string): Promise<Group> {
     const now = new Date().toISOString();
     const group: Group = {
       id: randomUUID(),
@@ -19,6 +20,7 @@ export class MemoryStore implements AppStore {
       endDate: dates?.endDate,
       shareToken: randomUUID().replaceAll("-", ""),
       publicEnabled: false,
+      ownerId: userId,
       createdAt: now,
       updatedAt: now
     };
@@ -26,11 +28,13 @@ export class MemoryStore implements AppStore {
     this.members.set(group.id, []);
     this.expenses.set(group.id, []);
     this.payments.set(group.id, []);
+    this.plannedExpenses.set(group.id, []);
     return group;
   }
 
-  async listGroups(): Promise<Group[]> {
-    return Array.from(this.groups.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  async listGroups(userId?: string): Promise<Group[]> {
+    const all = Array.from(this.groups.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return userId ? all.filter(g => !g.ownerId || g.ownerId === userId) : all;
   }
 
   async getGroup(groupId: string): Promise<Group | undefined> {
@@ -58,6 +62,7 @@ export class MemoryStore implements AppStore {
     this.members.delete(groupId);
     this.expenses.delete(groupId);
     this.payments.delete(groupId);
+    this.plannedExpenses.delete(groupId);
   }
 
   async addMember(groupId: string, displayName: string): Promise<Member> {
@@ -160,5 +165,55 @@ export class MemoryStore implements AppStore {
 
   async deletePayment(groupId: string, paymentId: string): Promise<void> {
     this.payments.set(groupId, (this.payments.get(groupId) ?? []).filter((payment) => payment.id !== paymentId));
+  }
+
+  async createPlannedExpense(groupId: string, payload: CreatePlannedExpensePayload): Promise<PlannedExpense> {
+    if (!this.groups.has(groupId)) throw new Error("Group not found.");
+    const now = new Date().toISOString();
+    const planned: PlannedExpense = {
+      id: randomUUID(),
+      groupId,
+      title: payload.title,
+      quantity: payload.quantity,
+      unit: payload.unit,
+      estimatedAmountMinor: payload.estimatedAmountMinor,
+      currency: payload.currency,
+      note: payload.note,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.plannedExpenses.set(groupId, [planned, ...(this.plannedExpenses.get(groupId) ?? [])]);
+    return planned;
+  }
+
+  async updatePlannedExpense(groupId: string, plannedExpenseId: string, payload: CreatePlannedExpensePayload): Promise<PlannedExpense> {
+    const list = this.plannedExpenses.get(groupId) ?? [];
+    const index = list.findIndex(p => p.id === plannedExpenseId);
+    if (index === -1) throw new Error("Planned expense not found.");
+    
+    const updated = {
+      ...list[index],
+      title: payload.title,
+      quantity: payload.quantity,
+      unit: payload.unit,
+      estimatedAmountMinor: payload.estimatedAmountMinor,
+      currency: payload.currency,
+      note: payload.note,
+      updatedAt: new Date().toISOString()
+    };
+    list[index] = updated;
+    this.plannedExpenses.set(groupId, list);
+    return updated;
+  }
+
+  async listPlannedExpenses(groupId: string): Promise<PlannedExpense[]> {
+    return this.plannedExpenses.get(groupId) ?? [];
+  }
+
+  async deletePlannedExpense(groupId: string, plannedExpenseId: string): Promise<void> {
+    this.plannedExpenses.set(
+      groupId,
+      (this.plannedExpenses.get(groupId) ?? []).filter((p) => p.id !== plannedExpenseId)
+    );
   }
 }

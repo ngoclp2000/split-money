@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { computeSplit } from "../domain/split-engine.js";
-import type { Expense, ExpenseParticipant, Group, Member, Payment } from "../domain/types.js";
-import type { AppStore, CreateExpensePayload } from "./store.js";
+import type { Expense, ExpenseParticipant, Group, Member, Payment, PlannedExpense } from "../domain/types.js";
+import type { AppStore, CreateExpensePayload, CreatePlannedExpensePayload } from "./store.js";
 
 function mapGroup(row: Record<string, any>): Group {
   const createdAt = row.created_at ?? new Date().toISOString();
@@ -14,6 +14,7 @@ function mapGroup(row: Record<string, any>): Group {
     endDate: row.end_date ?? undefined,
     shareToken: row.share_token ?? undefined,
     publicEnabled: Boolean(row.public_enabled),
+    ownerId: row.owner_id ?? undefined,
     createdAt,
     updatedAt: row.updated_at ?? createdAt
   };
@@ -50,7 +51,7 @@ export class SupabaseStore implements AppStore {
     this.client = createClient(url, serviceRoleKey);
   }
 
-  async createGroup(name: string, currency: string, dates?: { startDate?: string; endDate?: string }): Promise<Group> {
+  async createGroup(name: string, currency: string, dates?: { startDate?: string; endDate?: string }, userId?: string): Promise<Group> {
     const row = {
       id: randomUUID(),
       name,
@@ -58,11 +59,12 @@ export class SupabaseStore implements AppStore {
       start_date: dates?.startDate ?? null,
       end_date: dates?.endDate ?? null,
       share_token: randomUUID().replaceAll("-", ""),
-      public_enabled: false
+      public_enabled: false,
+      owner_id: userId ?? null
     };
     const { data, error } = await this.client.from("groups").insert(row).select("*").single();
     if (error && error.message.includes("Could not find")) {
-      const fallbackRow = { id: row.id, name, currency };
+      const fallbackRow = { id: row.id, name, currency, owner_id: userId ?? null };
       const { data: fallbackData, error: fallbackError } = await this.client
         .from("groups")
         .insert(fallbackRow)
@@ -75,8 +77,10 @@ export class SupabaseStore implements AppStore {
     return mapGroup(data);
   }
 
-  async listGroups(): Promise<Group[]> {
-    const { data, error } = await this.client.from("groups").select("*").order("created_at", { ascending: false });
+  async listGroups(userId?: string): Promise<Group[]> {
+    let query = this.client.from("groups").select("*").order("created_at", { ascending: false });
+    if (userId) query = query.eq("owner_id", userId);
+    const { data, error } = await query;
     if (error) throw error;
     return data.map(mapGroup);
   }
@@ -269,6 +273,78 @@ export class SupabaseStore implements AppStore {
   async deletePayment(groupId: string, paymentId: string): Promise<void> {
     const { error } = await this.client.from("payments").delete().eq("group_id", groupId).eq("id", paymentId);
     if (error) throw error;
+  }
+
+  async createPlannedExpense(groupId: string, payload: CreatePlannedExpensePayload): Promise<PlannedExpense> {
+    const row = {
+      id: randomUUID(),
+      group_id: groupId,
+      title: payload.title,
+      quantity: payload.quantity,
+      unit: payload.unit ?? null,
+      estimated_amount_minor: payload.estimatedAmountMinor ?? null,
+      currency: payload.currency,
+      note: payload.note ?? null
+    };
+    const { data, error } = await this.client.from("planned_expenses").insert(row).select("*").single();
+    if (error) throw error;
+    return this.mapPlannedExpense(data);
+  }
+
+  async updatePlannedExpense(groupId: string, plannedExpenseId: string, payload: CreatePlannedExpensePayload): Promise<PlannedExpense> {
+    const row = {
+      title: payload.title,
+      quantity: payload.quantity,
+      unit: payload.unit ?? null,
+      estimated_amount_minor: payload.estimatedAmountMinor ?? null,
+      currency: payload.currency,
+      note: payload.note ?? null,
+      updated_at: new Date().toISOString()
+    };
+    const { data, error } = await this.client
+      .from("planned_expenses")
+      .update(row)
+      .eq("group_id", groupId)
+      .eq("id", plannedExpenseId)
+      .select("*")
+      .single();
+    if (error) throw error;
+    return this.mapPlannedExpense(data);
+  }
+
+  async listPlannedExpenses(groupId: string): Promise<PlannedExpense[]> {
+    const { data, error } = await this.client
+      .from("planned_expenses")
+      .select("*")
+      .eq("group_id", groupId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return data.map((row) => this.mapPlannedExpense(row));
+  }
+
+  async deletePlannedExpense(groupId: string, plannedExpenseId: string): Promise<void> {
+    const { error } = await this.client
+      .from("planned_expenses")
+      .delete()
+      .eq("group_id", groupId)
+      .eq("id", plannedExpenseId);
+    if (error) throw error;
+  }
+
+  private mapPlannedExpense(row: Record<string, any>): PlannedExpense {
+    const createdAt = row.created_at ?? new Date().toISOString();
+    return {
+      id: row.id,
+      groupId: row.group_id,
+      title: row.title,
+      quantity: Number(row.quantity ?? 1),
+      unit: row.unit ?? undefined,
+      estimatedAmountMinor: row.estimated_amount_minor != null ? Number(row.estimated_amount_minor) : undefined,
+      currency: row.currency,
+      note: row.note ?? undefined,
+      createdAt,
+      updatedAt: row.updated_at ?? createdAt
+    };
   }
 
   private mapExpense(expense: Record<string, any>, participants: Record<string, any>[]): Expense {

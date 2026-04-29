@@ -70,17 +70,39 @@ export type GroupSnapshot = {
   members: Member[];
   expenses: Expense[];
   payments: Payment[];
+  plannedExpenses: PlannedExpense[];
   balances: Balance[];
   settlements: SettlementSuggestion[];
 };
 
+export type PlannedExpense = {
+  id: string;
+  groupId: string;
+  title: string;
+  quantity: number;
+  unit?: string;
+  estimatedAmountMinor?: number;
+  currency: string;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
+let _getToken: (() => Promise<string | null>) | null = null;
+
+export function setTokenProvider(fn: () => Promise<string | null>) {
+  _getToken = fn;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = _getToken ? await _getToken() : null;
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers
     }
   });
@@ -133,5 +155,17 @@ export const api = {
     body: { fromMemberId: string; toMemberId: string; amountMinor: number; note?: string }
   ) => request<Payment>(`/groups/${groupId}/payments`, { method: "POST", body: JSON.stringify(body) }),
   deletePayment: (groupId: string, paymentId: string) =>
-    request<void>(`/groups/${groupId}/payments/${paymentId}`, { method: "DELETE" })
+    request<void>(`/groups/${groupId}/payments/${paymentId}`, { method: "DELETE" }),
+  listPlannedExpenses: (groupId: string) => request<PlannedExpense[]>(`/groups/${groupId}/planned-expenses`),
+  createPlannedExpense: (
+    groupId: string,
+    body: { title: string; quantity: number; unit?: string; estimatedAmountMinor?: number; currency: string; note?: string }
+  ) => request<PlannedExpense>(`/groups/${groupId}/planned-expenses`, { method: "POST", body: JSON.stringify(body) }),
+  deletePlannedExpense: (groupId: string, plannedExpenseId: string) =>
+    request<void>(`/groups/${groupId}/planned-expenses/${plannedExpenseId}`, { method: "DELETE" }),
+  updatePlannedExpense: (
+    groupId: string,
+    plannedExpenseId: string,
+    body: { title: string; quantity: number; unit?: string; estimatedAmountMinor?: number; currency: string; note?: string }
+  ) => request<PlannedExpense>(`/groups/${groupId}/planned-expenses/${plannedExpenseId}`, { method: "PUT", body: JSON.stringify(body) })
 };

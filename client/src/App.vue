@@ -12,18 +12,146 @@ import {
   NInputNumber,
   NList,
   NListItem,
+  NModal,
   NSelect,
   NSpace,
   NStatistic,
   NTag,
   darkTheme
 } from "naive-ui";
-import { Banknote, Check, Copy, ExternalLink, EyeOff, Plus, ReceiptText, RefreshCw, Share2, Trash2, UsersRound } from "lucide-vue-next";
+import { Banknote, Check, ClipboardList, Copy, CreditCard, ExternalLink, EyeOff, LogOut, Plus, ReceiptText, RefreshCw, Share2, Trash2, UsersRound } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { api, type Balance, type Expense, type Group, type GroupSnapshot, type Member, type SettlementSuggestion, type SplitMethod } from "./api";
+import { api, setTokenProvider, type Balance, type Expense, type Group, type GroupSnapshot, type Member, type PlannedExpense, type SettlementSuggestion, type SplitMethod } from "./api";
 import { formatMoney, toMinorUnits } from "./money";
+import { supabase } from "./supabase";
+import type { User } from "@supabase/supabase-js";
+
+// ── Bank info (per-member, stored in localStorage) ──────────────────────────
+type BankInfo = {
+  bankCode: string;   // e.g. "VCB", "TCB", "MB", "ACB"
+  accountNumber: string;
+  accountName: string;
+};
+
+const BANK_INFO_KEY = "split_money_bank_info";
+
+function loadAllBankInfo(): Record<string, BankInfo> {
+  try {
+    return JSON.parse(localStorage.getItem(BANK_INFO_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveAllBankInfo(map: Record<string, BankInfo>) {
+  localStorage.setItem(BANK_INFO_KEY, JSON.stringify(map));
+}
+
+const bankInfoMap = ref<Record<string, BankInfo>>(loadAllBankInfo());
+
+function getBankInfo(memberId: string): BankInfo | null {
+  return bankInfoMap.value[memberId] ?? null;
+}
+
+// QR lightbox
+const qrLightbox = ref<{ src: string; alt: string } | null>(null);
+
+function openQrLightbox(src: string, alt: string) {
+  qrLightbox.value = { src, alt };
+}
+
+function closeQrLightbox() {
+  qrLightbox.value = null;
+}
+
+// Close on ESC
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeQrLightbox();
+  });
+}
+
+// Bank info editing modal
+const bankInfoModal = reactive({
+  open: false,
+  memberId: "",
+  memberName: "",
+  bankCode: "",
+  accountNumber: "",
+  accountName: ""
+});
+
+function openBankInfoModal(member: Member) {
+  const info = getBankInfo(member.id);
+  bankInfoModal.open = true;
+  bankInfoModal.memberId = member.id;
+  bankInfoModal.memberName = member.displayName;
+  bankInfoModal.bankCode = info?.bankCode ?? "";
+  bankInfoModal.accountNumber = info?.accountNumber ?? "";
+  bankInfoModal.accountName = info?.accountName ?? member.displayName;
+}
+
+function saveBankInfo() {
+  if (!bankInfoModal.memberId) return;
+  const all = loadAllBankInfo();
+  if (bankInfoModal.accountNumber.trim()) {
+    all[bankInfoModal.memberId] = {
+      bankCode: bankInfoModal.bankCode.trim().toUpperCase(),
+      accountNumber: bankInfoModal.accountNumber.trim(),
+      accountName: bankInfoModal.accountName.trim()
+    };
+  } else {
+    delete all[bankInfoModal.memberId];
+  }
+  saveAllBankInfo(all);
+  bankInfoMap.value = loadAllBankInfo();
+  bankInfoModal.open = false;
+}
+
+const VIET_BANKS = [
+  { label: "Vietcombank (VCB)", value: "VCB" },
+  { label: "Techcombank (TCB)", value: "TCB" },
+  { label: "MB Bank (MB)", value: "MB" },
+  { label: "BIDV", value: "BIDV" },
+  { label: "Vietinbank (CTG)", value: "CTG" },
+  { label: "ACB", value: "ACB" },
+  { label: "Sacombank (STB)", value: "STB" },
+  { label: "VPBank (VPB)", value: "VPB" },
+  { label: "TPBank (TPB)", value: "TPB" },
+  { label: "Agribank (VBA)", value: "VBA" },
+  { label: "SHB", value: "SHB" },
+  { label: "HDBank (HDB)", value: "HDB" },
+  { label: "OCB", value: "OCB" },
+  { label: "MSB", value: "MSB" },
+  { label: "SeABank (SEAB)", value: "SEAB" },
+  { label: "VIB", value: "VIB" },
+  { label: "Eximbank (EIB)", value: "EIB" },
+  { label: "Nam A Bank (NAB)", value: "NAB" },
+  { label: "BacABank (BAB)", value: "BAB" },
+  { label: "Kiên Long (KLB)", value: "KLB" },
+];
+
+function vietQrUrl(bankCode: string, accountNumber: string, accountName: string, amountMinor: number, currency: string, description: string): string {
+  const amount = currency === "VND" ? amountMinor : Math.round(amountMinor / 100);
+  const desc = encodeURIComponent(description.slice(0, 50));
+  const name = encodeURIComponent(accountName);
+  return `https://img.vietqr.io/image/${bankCode}-${accountNumber}-compact2.jpg?amount=${amount}&addInfo=${desc}&accountName=${name}`;
+}
 
 const notice = ref<{ type: "success" | "error"; text: string } | null>(null);
+
+// Auth state
+const currentUser = ref<User | null>(null);
+const authLoading = ref(true);
+const loginForm = reactive({ email: "", password: "" });
+const loginError = ref("");
+const loginSubmitting = ref(false);
+
+// Setup token provider for API requests
+setTokenProvider(async () => {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
+});
 
 const groups = ref<Group[]>([]);
 const selectedGroupId = ref<string | null>(null);
@@ -31,6 +159,7 @@ const members = ref<Member[]>([]);
 const expenses = ref<Expense[]>([]);
 const balances = ref<Balance[]>([]);
 const settlements = ref<SettlementSuggestion[]>([]);
+const plannedExpenses = ref<PlannedExpense[]>([]);
 const loading = ref(false);
 const publicSnapshot = ref<GroupSnapshot | null>(null);
 const publicLoading = ref(false);
@@ -52,6 +181,8 @@ const expenseForm = reactive({
 });
 const selectedParticipantIds = ref<string[]>([]);
 const participantValues = reactive<Record<string, number>>({});
+const plannedExpenseForm = reactive({ title: "", quantity: 1, unit: "", estimatedAmount: null as number | null, note: "" });
+const editingPlannedId = ref<string | null>(null);
 
 const selectedGroup = computed(() => groups.value.find((group) => group.id === selectedGroupId.value));
 const publicLink = computed(() => {
@@ -121,16 +252,18 @@ async function refreshGroupData() {
   loading.value = true;
   try {
     const groupId = selectedGroupId.value;
-    const [nextMembers, nextExpenses, nextBalances, nextSettlements] = await Promise.all([
+    const [nextMembers, nextExpenses, nextBalances, nextSettlements, nextPlanned] = await Promise.all([
       api.listMembers(groupId),
       api.listExpenses(groupId),
       api.listBalances(groupId),
-      api.listSettlementSuggestions(groupId)
+      api.listSettlementSuggestions(groupId),
+      api.listPlannedExpenses(groupId)
     ]);
     members.value = nextMembers;
     expenses.value = nextExpenses;
     balances.value = nextBalances;
     settlements.value = nextSettlements;
+    plannedExpenses.value = nextPlanned;
     if (!expenseForm.paidByMemberId && nextMembers[0]) expenseForm.paidByMemberId = nextMembers[0].id;
     selectedParticipantIds.value = nextMembers.map((member) => member.id);
     for (const member of nextMembers) {
@@ -312,6 +445,77 @@ async function deleteExpense(expense: Expense) {
   }
 }
 
+async function savePlannedExpense() {
+  if (!selectedGroupId.value || !plannedExpenseForm.title.trim()) return;
+  try {
+    const payload = {
+      title: plannedExpenseForm.title.trim(),
+      quantity: plannedExpenseForm.quantity || 1,
+      unit: plannedExpenseForm.unit.trim() || undefined,
+      estimatedAmountMinor: plannedExpenseForm.estimatedAmount
+        ? toMinorUnits(plannedExpenseForm.estimatedAmount, currency.value)
+        : undefined,
+      currency: currency.value,
+      note: plannedExpenseForm.note || undefined
+    };
+
+    if (editingPlannedId.value) {
+      await api.updatePlannedExpense(selectedGroupId.value, editingPlannedId.value, payload);
+      notice.value = { type: "success", text: "Đã cập nhật khoản dự trù" };
+    } else {
+      await api.createPlannedExpense(selectedGroupId.value, payload);
+      notice.value = { type: "success", text: "Đã thêm khoản dự trù" };
+    }
+
+    cancelEditPlannedExpense();
+    await refreshGroupData();
+  } catch (error) {
+    notice.value = { type: "error", text: error instanceof Error ? error.message : "Không lưu được khoản dự trù" };
+  }
+}
+
+function editPlannedExpense(planned: PlannedExpense) {
+  editingPlannedId.value = planned.id;
+  plannedExpenseForm.title = planned.title;
+  plannedExpenseForm.quantity = planned.quantity;
+  plannedExpenseForm.unit = planned.unit || "";
+  plannedExpenseForm.estimatedAmount = planned.estimatedAmountMinor
+    ? planned.estimatedAmountMinor / Math.pow(10, currency.value === "VND" ? 0 : 2)
+    : null;
+  plannedExpenseForm.note = planned.note || "";
+  document.querySelector(".planned-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function cancelEditPlannedExpense() {
+  editingPlannedId.value = null;
+  plannedExpenseForm.title = "";
+  plannedExpenseForm.quantity = 1;
+  plannedExpenseForm.unit = "";
+  plannedExpenseForm.estimatedAmount = null;
+  plannedExpenseForm.note = "";
+}
+
+async function deletePlannedExpense(planned: { id: string; title: string }) {
+  if (!selectedGroupId.value) return;
+  if (!window.confirm(`Xoá khoản dự trù "${planned.title}"?`)) return;
+  try {
+    await api.deletePlannedExpense(selectedGroupId.value, planned.id);
+    await refreshGroupData();
+    notice.value = { type: "success", text: "Đã xoá khoản dự trù" };
+  } catch (error) {
+    notice.value = { type: "error", text: error instanceof Error ? error.message : "Không xoá được khoản dự trù" };
+  }
+}
+
+function promoteToExpense(planned: { title: string; estimatedAmountMinor?: number }) {
+  expenseForm.title = planned.title;
+  expenseForm.amount = planned.estimatedAmountMinor
+    ? planned.estimatedAmountMinor / Math.pow(10, currency.value === "VND" ? 0 : 2)
+    : 0;
+  // scroll to expense form
+  document.querySelector(".expense-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 watch(
   () => [expenseForm.splitMethod, selectedParticipantIds.value.join(",")],
   () => {
@@ -333,14 +537,58 @@ watch(
   }
 );
 
-onMounted(() => {
+onMounted(async () => {
   if (isPublicMode) {
     refreshPublicSnapshot();
     return;
   }
 
-  refreshGroups();
+  // Check existing session
+  authLoading.value = true;
+  const { data: { session } } = await supabase.auth.getSession();
+  currentUser.value = session?.user ?? null;
+  authLoading.value = false;
+
+  // Listen for auth changes
+  supabase.auth.onAuthStateChange((_event, session) => {
+    currentUser.value = session?.user ?? null;
+    if (session?.user) {
+      refreshGroups();
+    } else {
+      groups.value = [];
+      selectedGroupId.value = null;
+    }
+  });
+
+  if (currentUser.value) {
+    refreshGroups();
+  }
 });
+
+async function login() {
+  loginError.value = "";
+  loginSubmitting.value = true;
+  try {
+    const { error } = await supabase.auth.signInWithPassword({
+      email: loginForm.email,
+      password: loginForm.password
+    });
+    if (error) loginError.value = error.message;
+  } finally {
+    loginSubmitting.value = false;
+  }
+}
+
+async function logout() {
+  await supabase.auth.signOut();
+  groups.value = [];
+  selectedGroupId.value = null;
+  members.value = [];
+  expenses.value = [];
+  balances.value = [];
+  settlements.value = [];
+  plannedExpenses.value = [];
+}
 </script>
 
 <template>
@@ -367,43 +615,121 @@ onMounted(() => {
 
         <n-alert v-if="notice" class="notice" :type="notice.type" :title="notice.text" closable @close="notice = null" />
 
-        <main v-if="publicSnapshot" class="grid public-grid">
-          <section class="panel stats-panel">
+        <main v-if="publicSnapshot" class="public-grid">
+          <!-- Stats -->
+          <section class="panel stats-panel public-stats">
             <n-statistic label="Tổng khoản chi" :value="publicSnapshot.expenses.length" />
             <n-statistic label="Thành viên" :value="publicSnapshot.members.length" />
             <n-statistic label="Đề xuất chuyển tiền" :value="publicSnapshot.settlements.length" />
           </section>
 
-          <section class="panel balances-panel">
-            <div class="panel-title">
-              <Banknote :size="18" />
-              <h3>Số dư</h3>
-            </div>
-            <n-empty v-if="publicSnapshot.balances.length === 0" description="Chưa có số dư" />
-            <div v-for="balance in publicSnapshot.balances" :key="balance.memberId" class="balance-row">
-              <span>{{ snapshotMemberNameById(publicSnapshot, balance.memberId) }}</span>
-              <strong :class="balance.amountMinor > 0 ? 'positive' : 'negative'">
-                {{ balance.amountMinor > 0 ? '+' : '' }}{{ formatMoney(balance.amountMinor, publicSnapshot.group.currency) }}
-              </strong>
-            </div>
-          </section>
-
-          <section class="panel settlement-panel">
-            <div class="panel-title">
-              <Check :size="18" />
-              <h3>Đề xuất thanh toán</h3>
-            </div>
-            <n-empty v-if="publicSnapshot.settlements.length === 0" description="Không cần thanh toán thêm" />
-            <div v-for="settlement in publicSnapshot.settlements" :key="`${settlement.fromMemberId}-${settlement.toMemberId}-${settlement.amountMinor}`" class="settlement-row">
-              <div>
-                <strong>{{ snapshotMemberNameById(publicSnapshot, settlement.fromMemberId) }}</strong>
-                chuyển cho
-                <strong>{{ snapshotMemberNameById(publicSnapshot, settlement.toMemberId) }}</strong>
-                <div class="money">{{ formatMoney(settlement.amountMinor, publicSnapshot.group.currency) }}</div>
+          <div class="public-two-col">
+            <!-- Balances -->
+            <section class="panel balances-panel">
+              <div class="panel-title">
+                <Banknote :size="18" />
+                <h3>Số dư</h3>
               </div>
-            </div>
-          </section>
+              <n-empty v-if="publicSnapshot.balances.length === 0" description="Chưa có số dư" />
+              <div v-for="balance in publicSnapshot.balances" :key="balance.memberId" class="balance-row">
+                <span>{{ snapshotMemberNameById(publicSnapshot, balance.memberId) }}</span>
+                <strong :class="balance.amountMinor > 0 ? 'positive' : 'negative'">
+                  {{ balance.amountMinor > 0 ? '+' : '' }}{{ formatMoney(balance.amountMinor, publicSnapshot.group.currency) }}
+                </strong>
+              </div>
+            </section>
 
+            <!-- Settlement with bank info + QR -->
+            <section class="panel settlement-panel">
+              <div class="panel-title">
+                <Check :size="18" />
+                <h3>Đề xuất thanh toán</h3>
+              </div>
+              <n-empty v-if="publicSnapshot.settlements.length === 0" description="Không cần thanh toán thêm" />
+              <div
+                v-for="settlement in publicSnapshot.settlements"
+                :key="`${settlement.fromMemberId}-${settlement.toMemberId}-${settlement.amountMinor}`"
+                class="settlement-card"
+              >
+                <div class="settlement-header">
+                  <div class="settlement-transfer">
+                    <span class="settlement-from">{{ snapshotMemberNameById(publicSnapshot, settlement.fromMemberId) }}</span>
+                    <span class="settlement-arrow">→</span>
+                    <span class="settlement-to">{{ snapshotMemberNameById(publicSnapshot, settlement.toMemberId) }}</span>
+                  </div>
+                  <div class="settlement-amount money">{{ formatMoney(settlement.amountMinor, publicSnapshot.group.currency) }}</div>
+                </div>
+
+                <!-- Bank info for the recipient -->
+                <template v-if="getBankInfo(settlement.toMemberId)">
+                  <div class="bank-info-block">
+                    <div class="bank-info-text">
+                      <div class="bank-info-row">
+                        <CreditCard :size="14" />
+                        <span class="bank-label">{{ getBankInfo(settlement.toMemberId)!.bankCode }}</span>
+                        <span class="bank-account">{{ getBankInfo(settlement.toMemberId)!.accountNumber }}</span>
+                      </div>
+                      <div class="bank-name">{{ getBankInfo(settlement.toMemberId)!.accountName }}</div>
+                    </div>
+                    <div class="qr-thumb-wrap">
+                      <img
+                        class="qr-thumb"
+                        :src="vietQrUrl(
+                          getBankInfo(settlement.toMemberId)!.bankCode,
+                          getBankInfo(settlement.toMemberId)!.accountNumber,
+                          getBankInfo(settlement.toMemberId)!.accountName,
+                          settlement.amountMinor,
+                          publicSnapshot.group.currency,
+                          `${snapshotMemberNameById(publicSnapshot, settlement.fromMemberId)} chuyen tien ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)} ${publicSnapshot.group.name}`
+                        )"
+                        :alt="`QR chuyển tiền cho ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)}`"
+                        loading="lazy"
+                        @click="openQrLightbox(
+                          vietQrUrl(
+                            getBankInfo(settlement.toMemberId)!.bankCode,
+                            getBankInfo(settlement.toMemberId)!.accountNumber,
+                            getBankInfo(settlement.toMemberId)!.accountName,
+                            settlement.amountMinor,
+                            publicSnapshot.group.currency,
+                            `${snapshotMemberNameById(publicSnapshot, settlement.fromMemberId)} chuyen tien ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)} ${publicSnapshot.group.name}`
+                          ),
+                          `QR chuyển tiền cho ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)}`
+                        )"
+                      />
+                      <button
+                        class="qr-expand-btn"
+                        title="Phóng to QR"
+                        @click="openQrLightbox(
+                          vietQrUrl(
+                            getBankInfo(settlement.toMemberId)!.bankCode,
+                            getBankInfo(settlement.toMemberId)!.accountNumber,
+                            getBankInfo(settlement.toMemberId)!.accountName,
+                            settlement.amountMinor,
+                            publicSnapshot.group.currency,
+                            `${snapshotMemberNameById(publicSnapshot, settlement.fromMemberId)} chuyen tien ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)} ${publicSnapshot.group.name}`
+                          ),
+                          `QR chuyển tiền cho ${snapshotMemberNameById(publicSnapshot, settlement.toMemberId)}`
+                        )"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <polyline points="15 3 21 3 21 9"/>
+                          <polyline points="9 21 3 21 3 15"/>
+                          <line x1="21" y1="3" x2="14" y2="10"/>
+                          <line x1="3" y1="21" x2="10" y2="14"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+                <div v-else class="bank-info-empty">
+                  <CreditCard :size="13" />
+                  Chưa có thông tin tài khoản
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- Expense history -->
           <section class="panel history-panel">
             <div class="panel-title">
               <ReceiptText :size="18" />
@@ -421,17 +747,89 @@ onMounted(() => {
               <span>{{ formatMoney(expense.amountMinor, expense.currency) }}</span>
             </div>
           </section>
+
+          <!-- Planned expenses -->
+          <section class="panel planned-panel public-planned">
+            <div class="panel-title">
+              <ClipboardList :size="18" />
+              <h3>Dự trù khoản chi</h3>
+            </div>
+            <n-empty v-if="publicSnapshot.plannedExpenses.length === 0" description="Chưa có khoản dự trù" />
+            <div v-for="planned in publicSnapshot.plannedExpenses" :key="planned.id" class="planned-row">
+              <div class="planned-info">
+                <strong>{{ planned.title }}</strong>
+                <small v-if="planned.estimatedAmountMinor">
+                  x{{ planned.quantity }} {{ planned.unit || '' }} &times; {{ formatMoney(planned.estimatedAmountMinor, planned.currency) }}
+                </small>
+                <small v-else-if="planned.quantity > 1 || planned.unit">
+                  x{{ planned.quantity }} {{ planned.unit || '' }}
+                </small>
+                <p v-if="planned.note">{{ planned.note }}</p>
+              </div>
+              <span class="planned-amount">
+                {{ planned.estimatedAmountMinor
+                  ? formatMoney(planned.estimatedAmountMinor * planned.quantity, planned.currency)
+                  : '—' }}
+              </span>
+            </div>
+          </section>
         </main>
+      </div>
+
+      <!-- Loading auth -->
+      <div v-else-if="authLoading" class="auth-loading">
+        <div class="brand-mark"><Banknote :size="32" /></div>
+        <p>Đang xác thực...</p>
+      </div>
+
+      <!-- Login screen -->
+      <div v-else-if="!currentUser" class="login-page">
+        <div class="login-card">
+          <div class="login-brand">
+            <div class="brand-mark"><Banknote :size="36" /></div>
+            <div>
+              <h1>Splitwise Plus</h1>
+              <p>Chia tiền chính xác đến từng đồng</p>
+            </div>
+          </div>
+          <n-alert v-if="loginError" type="error" :title="loginError" style="margin-bottom: 16px" />
+          <n-form-item label="Email">
+            <n-input
+              v-model:value="loginForm.email"
+              type="text"
+              placeholder="email@example.com"
+              @keyup.enter="login"
+            />
+          </n-form-item>
+          <n-form-item label="Mật khẩu">
+            <n-input
+              v-model:value="loginForm.password"
+              type="password"
+              placeholder="••••••••"
+              show-password-on="click"
+              @keyup.enter="login"
+            />
+          </n-form-item>
+          <n-button type="primary" block size="large" :loading="loginSubmitting" @click="login">
+            Đăng nhập
+          </n-button>
+        </div>
       </div>
 
       <div v-else class="app-shell">
         <aside class="sidebar">
           <div class="brand">
             <div class="brand-mark"><Banknote :size="24" /></div>
-            <div>
+            <div class="brand-text">
               <h1>Splitwise Plus</h1>
               <p>Chia tiền chính xác đến từng đồng</p>
             </div>
+            <n-button quaternary size="small" class="logout-btn" @click="logout" title="Đăng xuất">
+              <template #icon><LogOut :size="16" /></template>
+            </n-button>
+          </div>
+          <div class="user-info">
+            <span>{{ currentUser?.email }}</span>
           </div>
 
           <n-card size="small" title="Tạo nhóm">
@@ -542,6 +940,16 @@ onMounted(() => {
                 <div v-for="member in members" :key="member.id" class="member-chip">
                   <span>{{ member.displayName }}</span>
                   <small>{{ formatDate(member.joinedAt) }}</small>
+                  <button
+                    type="button"
+                    class="icon-action bank-btn"
+                    :class="{ 'bank-set': !!getBankInfo(member.id) }"
+                    :aria-label="getBankInfo(member.id) ? 'Sửa tài khoản ngân hàng' : 'Thêm tài khoản ngân hàng'"
+                    :title="getBankInfo(member.id) ? `${getBankInfo(member.id)!.bankCode} ${getBankInfo(member.id)!.accountNumber}` : 'Thiết lập tài khoản ngân hàng'"
+                    @click="openBankInfoModal(member)"
+                  >
+                    <CreditCard :size="14" />
+                  </button>
                   <button type="button" class="icon-action" aria-label="Xoá thành viên" @click="deleteMember(member)">
                     <Trash2 :size="14" />
                   </button>
@@ -559,7 +967,13 @@ onMounted(() => {
                   <n-input v-model:value="expenseForm.title" placeholder="Ví dụ: Ăn tối" />
                 </n-form-item>
                 <n-form-item label="Số tiền">
-                  <n-input-number v-model:value="expenseForm.amount" :min="0" class="full" />
+                  <n-input-number
+                    v-model:value="expenseForm.amount"
+                    :min="0"
+                    class="full"
+                    :format="(v) => v === null ? '' : new Intl.NumberFormat('vi-VN').format(v)"
+                    :parse="(s) => { const n = Number(s.replace(/\./g, '').replace(/,/g, '.')); return isNaN(n) ? 0 : n; }"
+                  />
                 </n-form-item>
                 <n-form-item label="Người trả">
                   <n-select v-model:value="expenseForm.paidByMemberId" :options="memberOptions" />
@@ -671,8 +1085,146 @@ onMounted(() => {
                 </div>
               </div>
             </section>
+
+            <section class="panel planned-panel">
+              <div class="panel-title">
+                <ClipboardList :size="18" />
+                <h3>Dự trù khoản chi</h3>
+              </div>
+              <div class="inline-form planned-form">
+                <n-input v-model:value="plannedExpenseForm.title" placeholder="Tên khoản dự trù" @keyup.enter="savePlannedExpense" />
+                <n-input-number
+                  v-model:value="plannedExpenseForm.quantity"
+                  :min="0"
+                  :step="0.1"
+                  placeholder="SL"
+                  style="width: 80px"
+                  :format="(v) => v === null ? '' : new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(v)"
+                  :parse="(s) => { const n = Number(s.replace(/,/g, '.')); return isNaN(n) ? null : n; }"
+                />
+                <n-input
+                  v-model:value="plannedExpenseForm.unit"
+                  placeholder="Đơn vị"
+                  style="width: 80px"
+                  @keyup.enter="savePlannedExpense"
+                />
+                <n-input-number
+                  v-model:value="plannedExpenseForm.estimatedAmount"
+                  :min="0"
+                  placeholder="Đơn giá"
+                  :format="(v) => v === null ? '' : new Intl.NumberFormat('vi-VN').format(v)"
+                  :parse="(s) => { const n = Number(s.replace(/\./g, '').replace(/,/g, '.')); return isNaN(n) ? null : n; }"
+                />
+                <div class="planned-form-actions">
+                  <n-button v-if="editingPlannedId" type="default" @click="cancelEditPlannedExpense">Huỷ</n-button>
+                  <n-button type="primary" @click="savePlannedExpense">
+                    <template v-if="!editingPlannedId"><Plus :size="16" /></template>
+                    <template v-else><Check :size="16" /></template>
+                  </n-button>
+                </div>
+              </div>
+              <n-input v-model:value="plannedExpenseForm.note" placeholder="Ghi chú (tuỳ chọn)" class="planned-note-input" />
+              <n-empty v-if="plannedExpenses.length === 0" description="Chưa có khoản dự trù" />
+              <div v-for="planned in plannedExpenses" :key="planned.id" class="planned-row">
+                <div class="planned-info">
+                  <strong>{{ planned.title }}</strong>
+                  <small v-if="planned.estimatedAmountMinor">
+                    x{{ planned.quantity }} {{ planned.unit || '' }} &times; {{ formatMoney(planned.estimatedAmountMinor, planned.currency) }}
+                  </small>
+                  <small v-else-if="planned.quantity > 1 || planned.unit">
+                    x{{ planned.quantity }} {{ planned.unit || '' }}
+                  </small>
+                  <p v-if="planned.note">{{ planned.note }}</p>
+                </div>
+                <div class="row-actions">
+                  <span class="planned-amount">
+                    {{ planned.estimatedAmountMinor
+                      ? formatMoney(planned.estimatedAmountMinor * planned.quantity, planned.currency)
+                      : '—' }}
+                  </span>
+                  <n-button size="small" @click="promoteToExpense(planned)">Chốt</n-button>
+                  <n-button size="small" secondary @click="editPlannedExpense(planned)">Sửa</n-button>
+                  <n-button size="small" type="error" secondary @click="deletePlannedExpense(planned)">
+                    <template #icon><Trash2 :size="14" /></template>
+                  </n-button>
+                </div>
+              </div>
+            </section>
           </main>
         </section>
       </div>
+
+      <!-- Bank info modal -->
+      <n-modal
+        v-model:show="bankInfoModal.open"
+        preset="card"
+        style="max-width: 420px; width: 92vw"
+        :title="`Tài khoản: ${bankInfoModal.memberName}`"
+        :bordered="false"
+      >
+        <n-space vertical>
+          <n-form-item label="Ngân hàng">
+            <n-select
+              v-model:value="bankInfoModal.bankCode"
+              :options="VIET_BANKS"
+              filterable
+              placeholder="Chọn ngân hàng"
+            />
+          </n-form-item>
+          <n-form-item label="Số tài khoản">
+            <n-input
+              v-model:value="bankInfoModal.accountNumber"
+              placeholder="Ví dụ: 0123456789"
+              @keyup.enter="saveBankInfo"
+            />
+          </n-form-item>
+          <n-form-item label="Tên chủ tài khoản">
+            <n-input
+              v-model:value="bankInfoModal.accountName"
+              placeholder="Như in trên tài khoản ngân hàng"
+              @keyup.enter="saveBankInfo"
+            />
+          </n-form-item>
+          <n-alert v-if="bankInfoModal.bankCode && bankInfoModal.accountNumber" type="info" :show-icon="false" style="font-size: 12px">
+            Mã QR VietQR sẽ tự động hiện trong trang public khi người khác cần chuyển tiền cho thành viên này.
+          </n-alert>
+          <!-- QR preview -->
+          <div v-if="bankInfoModal.bankCode && bankInfoModal.accountNumber" class="qr-preview-wrap">
+            <img
+              :src="vietQrUrl(bankInfoModal.bankCode, bankInfoModal.accountNumber, bankInfoModal.accountName, 0, 'VND', 'Xem truoc QR')"
+              alt="Xem trước QR"
+              class="qr-preview"
+            />
+          </div>
+          <n-button type="primary" block @click="saveBankInfo">Lưu tài khoản</n-button>
+          <n-button block @click="bankInfoModal.open = false">Huỷ</n-button>
+        </n-space>
+      </n-modal>
+
+      <!-- QR Lightbox -->
+      <Teleport to="body">
+        <Transition name="qr-lightbox">
+          <div
+            v-if="qrLightbox"
+            class="qr-lightbox-backdrop"
+            @click.self="closeQrLightbox"
+          >
+            <div class="qr-lightbox-box">
+              <button class="qr-lightbox-close" @click="closeQrLightbox" title="Đóng">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+              <img
+                :src="qrLightbox.src"
+                :alt="qrLightbox.alt"
+                class="qr-lightbox-img"
+              />
+              <p class="qr-lightbox-caption">{{ qrLightbox.alt }}</p>
+            </div>
+          </div>
+        </Transition>
+      </Teleport>
   </n-config-provider>
 </template>

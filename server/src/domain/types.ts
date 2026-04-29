@@ -8,6 +8,7 @@ export type Group = {
   endDate?: string;
   shareToken?: string;
   publicEnabled: boolean;
+  ownerId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -68,4 +69,17 @@ export type SettlementSuggestion = {
   fromMemberId: string;
   toMemberId: string;
   amountMinor: number;
+};
+
+export type PlannedExpense = {
+  id: string;
+  groupId: string;
+  title: string;
+  quantity: number;
+  unit?: string;
+  estimatedAmountMinor?: number;
+  currency: string;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
 };

@@ -36,3 +36,12 @@ export const createPaymentSchema = z.object({
 export const updateSharingSchema = z.object({
   publicEnabled: z.boolean()
 });
+
+export const createPlannedExpenseSchema = z.object({
+  title: z.string().trim().min(1),
+  quantity: z.number().positive().default(1),
+  unit: z.string().trim().optional(),
+  estimatedAmountMinor: z.number().int().positive().optional(),
+  currency: z.string().trim().min(3).max(3),
+  note: z.string().trim().optional()
+});

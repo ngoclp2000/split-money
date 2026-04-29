@@ -1,8 +1,51 @@
 import cors from "cors";
 import express, { type Request, type Response, type NextFunction } from "express";
+import { createClient } from "@supabase/supabase-js";
 import { computeBalances, simplifyDebts } from "../domain/balances.js";
 import type { AppStore } from "../store/store.js";
-import { createExpenseSchema, createGroupSchema, createMemberSchema, createPaymentSchema, updateSharingSchema } from "./schemas.js";
+import { createExpenseSchema, createGroupSchema, createMemberSchema, createPaymentSchema, createPlannedExpenseSchema, updateSharingSchema } from "./schemas.js";
+
+// Extend Express Request type
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: string;
+    }
+  }
+}
+
+const supabaseAuthClient = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null;
+
+async function requireAuth(request: Request, response: Response, next: NextFunction) {
+  const authHeader = request.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token) {
+    response.status(401).json({ message: "Unauthorized: No token provided" });
+    return;
+  }
+
+  if (!supabaseAuthClient) {
+    // Dev mode: no Supabase configured, skip auth
+    request.userId = "dev-user";
+    next();
+    return;
+  }
+
+  try {
+    const { data: { user }, error } = await supabaseAuthClient.auth.getUser(token);
+    if (error || !user) {
+      response.status(401).json({ message: "Unauthorized: Invalid token" });
+      return;
+    }
+    request.userId = user.id;
+    next();
+  } catch {
+    response.status(401).json({ message: "Unauthorized" });
+  }
+}
 
 export function createApp(store: AppStore) {
   const app = express();
@@ -14,21 +57,21 @@ export function createApp(store: AppStore) {
     response.json({ ok: true });
   });
 
-  app.get("/groups", async (_request, response, next) => {
+  app.get("/groups", requireAuth, async (request, response, next) => {
     try {
-      response.json(await store.listGroups());
+      response.json(await store.listGroups(request.userId!));
     } catch (error) {
       next(error);
     }
   });
 
-  app.post("/groups", async (request, response, next) => {
+  app.post("/groups", requireAuth, async (request, response, next) => {
     try {
       const input = createGroupSchema.parse(request.body);
       response.status(201).json(await store.createGroup(input.name, input.currency.toUpperCase(), {
         startDate: input.startDate,
         endDate: input.endDate
-      }));
+      }, request.userId!));
     } catch (error) {
       next(error);
     }
@@ -150,6 +193,41 @@ export function createApp(store: AppStore) {
     }
   });
 
+  app.get("/groups/:groupId/planned-expenses", async (request, response, next) => {
+    try {
+      response.json(await store.listPlannedExpenses(request.params.groupId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/groups/:groupId/planned-expenses", async (request, response, next) => {
+    try {
+      const input = createPlannedExpenseSchema.parse(request.body);
+      response.status(201).json(await store.createPlannedExpense(request.params.groupId, input));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/groups/:groupId/planned-expenses/:plannedExpenseId", async (request, response, next) => {
+    try {
+      await store.deletePlannedExpense(request.params.groupId, request.params.plannedExpenseId);
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/groups/:groupId/planned-expenses/:plannedExpenseId", async (request, response, next) => {
+    try {
+      const input = createPlannedExpenseSchema.parse(request.body);
+      response.json(await store.updatePlannedExpense(request.params.groupId, request.params.plannedExpenseId, input));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/groups/:groupId/balances", async (request, response, next) => {
     try {
       response.json(await getBalances(store, request.params.groupId));
@@ -199,6 +277,7 @@ async function getGroupSnapshot(store: AppStore, groupId: string, group?: Awaite
   const members = await store.listMembers(groupId);
   const expenses = await store.listExpenses(groupId);
   const payments = await store.listPayments(groupId);
+  const plannedExpenses = await store.listPlannedExpenses(groupId);
   const balances = computeBalances(
     members.map((member) => member.id),
     expenses,
@@ -210,6 +289,7 @@ async function getGroupSnapshot(store: AppStore, groupId: string, group?: Awaite
     members,
     expenses,
     payments,
+    plannedExpenses,
     balances,
     settlements: simplifyDebts(balances)
   };
