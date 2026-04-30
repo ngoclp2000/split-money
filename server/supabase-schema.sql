@@ -20,11 +20,17 @@ create table if not exists group_members (
   id uuid primary key,
   group_id uuid not null references groups(id) on delete cascade,
   display_name text not null,
+  bank_code text,
+  account_number text,
+  account_name text,
   joined_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table group_members add column if not exists updated_at timestamptz not null default now();
+alter table group_members add column if not exists bank_code text;
+alter table group_members add column if not exists account_number text;
+alter table group_members add column if not exists account_name text;
 
 create table if not exists expenses (
   id uuid primary key,

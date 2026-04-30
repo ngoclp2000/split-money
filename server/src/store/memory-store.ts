@@ -83,6 +83,21 @@ export class MemoryStore implements AppStore {
     return this.members.get(groupId) ?? [];
   }
 
+  async updateMember(groupId: string, memberId: string, payload: Partial<Omit<Member, "id" | "groupId" | "joinedAt" | "updatedAt">>): Promise<Member> {
+    const list = this.members.get(groupId) ?? [];
+    const index = list.findIndex(m => m.id === memberId);
+    if (index === -1) throw new Error("Member not found.");
+
+    const updated = {
+      ...list[index],
+      ...payload,
+      updatedAt: new Date().toISOString()
+    };
+    list[index] = updated;
+    this.members.set(groupId, list);
+    return updated;
+  }
+
   async deleteMember(groupId: string, memberId: string): Promise<void> {
     const isUsedByExpense = (this.expenses.get(groupId) ?? []).some(
       (expense) =>

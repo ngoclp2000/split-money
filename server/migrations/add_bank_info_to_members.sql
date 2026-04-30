@@ -1,0 +1,4 @@
+ALTER TABLE group_members
+ADD COLUMN IF NOT EXISTS bank_code TEXT,
+ADD COLUMN IF NOT EXISTS account_number TEXT,
+ADD COLUMN IF NOT EXISTS account_name TEXT;

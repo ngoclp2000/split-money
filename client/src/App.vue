@@ -26,33 +26,6 @@ import { formatMoney, toMinorUnits } from "./money";
 import { supabase } from "./supabase";
 import type { User } from "@supabase/supabase-js";
 
-// ── Bank info (per-member, stored in localStorage) ──────────────────────────
-type BankInfo = {
-  bankCode: string;   // e.g. "VCB", "TCB", "MB", "ACB"
-  accountNumber: string;
-  accountName: string;
-};
-
-const BANK_INFO_KEY = "split_money_bank_info";
-
-function loadAllBankInfo(): Record<string, BankInfo> {
-  try {
-    return JSON.parse(localStorage.getItem(BANK_INFO_KEY) ?? "{}");
-  } catch {
-    return {};
-  }
-}
-
-function saveAllBankInfo(map: Record<string, BankInfo>) {
-  localStorage.setItem(BANK_INFO_KEY, JSON.stringify(map));
-}
-
-const bankInfoMap = ref<Record<string, BankInfo>>(loadAllBankInfo());
-
-function getBankInfo(memberId: string): BankInfo | null {
-  return bankInfoMap.value[memberId] ?? null;
-}
-
 // QR lightbox
 const qrLightbox = ref<{ src: string; alt: string } | null>(null);
 
@@ -81,32 +54,7 @@ const bankInfoModal = reactive({
   accountName: ""
 });
 
-function openBankInfoModal(member: Member) {
-  const info = getBankInfo(member.id);
-  bankInfoModal.open = true;
-  bankInfoModal.memberId = member.id;
-  bankInfoModal.memberName = member.displayName;
-  bankInfoModal.bankCode = info?.bankCode ?? "";
-  bankInfoModal.accountNumber = info?.accountNumber ?? "";
-  bankInfoModal.accountName = info?.accountName ?? member.displayName;
-}
-
-function saveBankInfo() {
-  if (!bankInfoModal.memberId) return;
-  const all = loadAllBankInfo();
-  if (bankInfoModal.accountNumber.trim()) {
-    all[bankInfoModal.memberId] = {
-      bankCode: bankInfoModal.bankCode.trim().toUpperCase(),
-      accountNumber: bankInfoModal.accountNumber.trim(),
-      accountName: bankInfoModal.accountName.trim()
-    };
-  } else {
-    delete all[bankInfoModal.memberId];
-  }
-  saveAllBankInfo(all);
-  bankInfoMap.value = loadAllBankInfo();
-  bankInfoModal.open = false;
-}
+// Moved to after reactive variables
 
 const VIET_BANKS = [
   { label: "Vietcombank (VCB)", value: "VCB" },
@@ -183,6 +131,46 @@ const selectedParticipantIds = ref<string[]>([]);
 const participantValues = reactive<Record<string, number>>({});
 const plannedExpenseForm = reactive({ title: "", quantity: 1, unit: "", estimatedAmount: null as number | null, note: "" });
 const editingPlannedId = ref<string | null>(null);
+
+function getBankInfo(memberId: string) {
+  const member = isPublicMode ? publicSnapshot.value?.members.find(m => m.id === memberId) : members.value.find(m => m.id === memberId);
+  if (!member || !member.accountNumber) return null;
+  return {
+    bankCode: member.bankCode || "",
+    accountNumber: member.accountNumber || "",
+    accountName: member.accountName || member.displayName
+  };
+}
+
+function openBankInfoModal(member: Member) {
+  bankInfoModal.open = true;
+  bankInfoModal.memberId = member.id;
+  bankInfoModal.memberName = member.displayName;
+  bankInfoModal.bankCode = member.bankCode || "";
+  bankInfoModal.accountNumber = member.accountNumber || "";
+  bankInfoModal.accountName = member.accountName || member.displayName;
+}
+
+async function saveBankInfo() {
+  if (!bankInfoModal.memberId || !selectedGroupId.value) return;
+  try {
+    const payload = bankInfoModal.accountNumber.trim() ? {
+      bankCode: bankInfoModal.bankCode.trim().toUpperCase(),
+      accountNumber: bankInfoModal.accountNumber.trim(),
+      accountName: bankInfoModal.accountName.trim()
+    } : {
+      bankCode: "",
+      accountNumber: "",
+      accountName: ""
+    };
+    await api.updateMember(selectedGroupId.value, bankInfoModal.memberId, payload);
+    await refreshGroupData();
+    bankInfoModal.open = false;
+    notice.value = { type: "success", text: "Đã cập nhật thông tin ngân hàng" };
+  } catch (error) {
+    notice.value = { type: "error", text: error instanceof Error ? error.message : "Lỗi cập nhật thông tin ngân hàng" };
+  }
+}
 
 const selectedGroup = computed(() => groups.value.find((group) => group.id === selectedGroupId.value));
 const publicLink = computed(() => {

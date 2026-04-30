@@ -25,6 +25,9 @@ function mapMember(row: Record<string, any>): Member {
     id: row.id,
     groupId: row.group_id,
     displayName: row.display_name,
+    bankCode: row.bank_code ?? undefined,
+    accountNumber: row.account_number ?? undefined,
+    accountName: row.account_name ?? undefined,
     joinedAt: row.joined_at,
     updatedAt: row.updated_at ?? row.joined_at
   };
@@ -139,6 +142,24 @@ export class SupabaseStore implements AppStore {
       .order("joined_at", { ascending: true });
     if (error) throw error;
     return data.map(mapMember);
+  }
+
+  async updateMember(groupId: string, memberId: string, payload: Partial<Omit<Member, "id" | "groupId" | "joinedAt" | "updatedAt">>): Promise<Member> {
+    const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+    if (payload.displayName !== undefined) updates.display_name = payload.displayName;
+    if (payload.bankCode !== undefined) updates.bank_code = payload.bankCode;
+    if (payload.accountNumber !== undefined) updates.account_number = payload.accountNumber;
+    if (payload.accountName !== undefined) updates.account_name = payload.accountName;
+
+    const { data, error } = await this.client
+      .from("group_members")
+      .update(updates)
+      .eq("group_id", groupId)
+      .eq("id", memberId)
+      .select("*")
+      .single();
+    if (error) throw error;
+    return mapMember(data);
   }
 
   async deleteMember(groupId: string, memberId: string): Promise<void> {

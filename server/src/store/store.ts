@@ -27,6 +27,7 @@ export interface AppStore {
   updateGroupSharing(groupId: string, publicEnabled: boolean): Promise<Group>;
   deleteGroup(groupId: string): Promise<void>;
   addMember(groupId: string, displayName: string): Promise<Member>;
+  updateMember(groupId: string, memberId: string, payload: Partial<Omit<Member, "id" | "groupId" | "joinedAt" | "updatedAt">>): Promise<Member>;
   deleteMember(groupId: string, memberId: string): Promise<void>;
   listMembers(groupId: string): Promise<Member[]>;
   createExpense(groupId: string, payload: CreateExpensePayload): Promise<Expense>;

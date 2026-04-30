@@ -3,7 +3,7 @@ import express, { type Request, type Response, type NextFunction } from "express
 import { createClient } from "@supabase/supabase-js";
 import { computeBalances, simplifyDebts } from "../domain/balances.js";
 import type { AppStore } from "../store/store.js";
-import { createExpenseSchema, createGroupSchema, createMemberSchema, createPaymentSchema, createPlannedExpenseSchema, updateSharingSchema } from "./schemas.js";
+import { createExpenseSchema, createGroupSchema, createMemberSchema, createPaymentSchema, createPlannedExpenseSchema, updateSharingSchema, updateMemberSchema } from "./schemas.js";
 
 // Extend Express Request type
 declare global {
@@ -127,6 +127,15 @@ export function createApp(store: AppStore) {
     try {
       const input = createMemberSchema.parse(request.body);
       response.status(201).json(await store.addMember(request.params.groupId, input.displayName));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/groups/:groupId/members/:memberId", async (request, response, next) => {
+    try {
+      const input = updateMemberSchema.parse(request.body);
+      response.json(await store.updateMember(request.params.groupId, request.params.memberId, input));
     } catch (error) {
       next(error);
     }

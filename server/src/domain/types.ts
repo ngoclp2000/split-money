@@ -17,6 +17,9 @@ export type Member = {
   id: string;
   groupId: string;
   displayName: string;
+  bankCode?: string;
+  accountNumber?: string;
+  accountName?: string;
   joinedAt: string;
   updatedAt: string;
 };

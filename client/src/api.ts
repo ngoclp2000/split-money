@@ -16,6 +16,9 @@ export type Member = {
   id: string;
   groupId: string;
   displayName: string;
+  bankCode?: string;
+  accountNumber?: string;
+  accountName?: string;
   joinedAt: string;
   updatedAt: string;
 };
@@ -130,6 +133,8 @@ export const api = {
   listMembers: (groupId: string) => request<Member[]>(`/groups/${groupId}/members`),
   addMember: (groupId: string, body: { displayName: string }) =>
     request<Member>(`/groups/${groupId}/members`, { method: "POST", body: JSON.stringify(body) }),
+  updateMember: (groupId: string, memberId: string, body: { displayName?: string, bankCode?: string, accountNumber?: string, accountName?: string }) =>
+    request<Member>(`/groups/${groupId}/members/${memberId}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteMember: (groupId: string, memberId: string) =>
     request<void>(`/groups/${groupId}/members/${memberId}`, { method: "DELETE" }),
   listExpenses: (groupId: string) => request<Expense[]>(`/groups/${groupId}/expenses`),

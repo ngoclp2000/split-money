@@ -11,6 +11,13 @@ export const createMemberSchema = z.object({
   displayName: z.string().trim().min(1)
 });
 
+export const updateMemberSchema = z.object({
+  displayName: z.string().trim().min(1).optional(),
+  bankCode: z.string().trim().optional(),
+  accountNumber: z.string().trim().optional(),
+  accountName: z.string().trim().optional()
+});
+
 export const createExpenseSchema = z.object({
   title: z.string().trim().min(1),
   amountMinor: z.number().int().positive(),
